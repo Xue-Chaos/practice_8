@@ -1,172 +1,251 @@
-/* 包含头文件 */
-#include<iocc2530.h>
-#include<string.h>
+#include <ioCC2530.h>  
 
-/*宏定义*/
-#define LED1 P1_0
-#define LED2 P1_1
+#define D3 P1_0     // P1_0定义为P1_0
+#define D4 P1_1     // P1_1定义为P1_1
+#define D5 P1_3     // P1_2定义为P1_3
+#define D6 P1_4     // P1_3定义为P1_4
 #define SW1  P1_2
-#define uint16 unsigned short
-/*定义变量*/
-int count=0;//统计定时器溢出次数
-char output[8];//存放转换成字符形式的传感器数据
-uint16 light_val;//ADC采集结果
-int Sw1_Count = 0;//按键按下的次数
 
-/*声明函数*/
-void InitCLK(void);//系统时钟初始化函数，为32MHz
-void InitUART0( );//串口0初始化
-void InitT1( );//定时器1初始化
-unsigned short Get_adc( );//ADC采集
-void Uart_tx_string(char *data_tx,int len);//往串口发送指定长度的数据
-void InitLED(void);//灯的初始化
-void InitSW1(void);//按键初始化
+char data[]="现在LED灯处于微亮状态！";
+char data1[]="现在LED灯处于显示数据状态！";
+char data2[]="现在LED灯处于熄灭状态!";
 
-/*定义函数*/
-void InitCLK(void)
+unsigned char C_AN;         //长时间按键不松开标志
+unsigned char ZC_AN_2;      //正常按键第二下标志
+unsigned char count;        //键值
+unsigned char count_DSQ;    //定时器计数器
+
+void delay(int delaytime)
 {
-  CLKCONCMD &= 0x80;
-  while(CLKCONSTA & 0x40);
+  int i=0,j=0;
+  for(i=0;i<240;i++)
+    for(j=0;j<delaytime;j++);
 }
 
-void InitLED()
+void initLed()
 {
-  P1SEL &= ~0x03;//设置P1_0、P1_1为GPIO口
-  P1DIR |= 0x03;//设置P1_0和P1_1为输出
-  LED1 = LED2 = 0;//设置LED1和LED2的初始状态
+ // P1SEL&=~0x1F;  //P1.0~P1.4设置为GPIO
+    P1DIR |= 0x1B;   //P1.0 P1.1 P1.3 P1.4 设置为输出
+   // P1DIR&=~0x04;  //P1.2设置为输入
+    D3 = D4 = D5 = D6 = 0;     //所有LED灯上电处于熄灭状态 P1 = 0X00
 }
 
-void InitSW1()
+void initial_usart_tx()
 {
-  P1SEL &= ~0X04;       //设置SW1为普通IO口
-  P1DIR &= ~0X04;       //设置SW1为输入引脚 
-  
-  P1INP &= ~0X04;       //设置SW1为上下拉模式
-  P2INP &= ~0x40;       //设置SW1所属端口为上拉    
-  IEN2 |= 0X10;          //使能SW1端口组中断源     
-  P1IEN |= 0X04;          //使能SW1端口外部中断    
-  PICTL |= 0X02;          //下降沿触发；PICTL中断边缘寄存器
+    PERCFG = 0X00;
+    P0SEL |= 0X3C;
+    P2DIR &= ~0XC0;
+    U0CSR = 0X80;
+    U0GCR = 11;
+    U0BAUD = 216;      //设置串口波特率为115200
+    UTX0IF = 0;
 }
 
-void InitT1()
+void initial_t1()     //定时器1设置
 {
-    T1CTL |= 0X09;//32分频，自由运行模式 （1001）
-    IEN1 |=0X02;//定时器1中断使能 或TIMIF|=0X40
-    EA = 1; 
+    T1CC0L = 62500 & 0xFF;//或T1CC0L = 0X24; 计算定时0.25秒250毫秒//实际定时500毫秒
+    T1CC0H = ((62500 & 0xFF00) >> 8);//或T1CC0H = 0XF4;     
+    T1CTL |= 0X0F;    //启动定时器1，128分频，正计数倒计数模式
+//    TIMIF |= 0X40;    //使能了定时器1的溢出中断允许 
+    EA = 1;            //使能单片机总中断
 }
 
-uint16 Get_adc( )
+void uart_tx_string(char *data_tx, int len)
 {
-    APCFG |= 0x01;//设置P0_0为模拟端口
-    ADCCON3 = 0x80 | 0x20 | 0x00;//或0xA0;设置参考电压3.3V 256分频 使用AIN0通道
-     
-    while(!ADCIF);
-    ADCIF=0;
-    unsigned long value;
-    value = ADCH;
-    value = value<<8;
-    value |=ADCL;
-    value = value*330;
-    value = value>>15;
-    return (uint16)value;
+    unsigned int j;
+    for(j=0;j<len;j++)
+    {
+        U0DBUF = *data_tx++;
+        while(UTX0IF == 0);
+        UTX0IF = 0;
+    }  
 }
-void InitUART0( )
-{
-   U0CSR |=0X80;//串口模式
-   PERCFG |= 0x00;//USART0使用备用位置1 P0_2 P0_3
-   P0SEL |= 0X3C;//设置P0_2 P0_3为外设
-   U0UCR |= 0X80;//流控无 8位数据位 无奇偶校验 1位停止位
-
-   U0GCR = 10; //设置波特率为38400 （见书上对应表）
-   U0BAUD = 59;
-  
-    UTX0IF = 0;    
-    EA = 1;   
-}
-
-void Uart_tx_string(char *data_tx,int len)  
-{   unsigned int j;  
-    for(j=0;j<len;j++)  
-    {   U0DBUF = *data_tx++;  
-        while(UTX0IF == 0);  
-        UTX0IF = 0;   
-    }
-} 
-
-
 
 #pragma vector = T1_VECTOR
-__interrupt void t1( )
+__interrupt void TI_ISR(void)
 {
-    T1IF = 0;//清除定时器1中断标志
-    
-    
-   if(Sw1_Count == 1)//第一次按下按键
-   {
-      /*.......答题区5开始：第一次按下按键SW1，处理隔1秒把光敏传感数据发送到串口
-     ，且LED1,LED2每1秒闪烁一次....................*/
-       
-      /*.......答题区5结束.......................................*/
-    }
-    else if(Sw1_Count == 2)//第二次按下按键
+    IRCON = 0X00;
+    if(C_AN == 1)        //流水灯，每秒变化
     {
-      /*.......答题区6开始：第二次按下按键SW1，处理隔3秒把光敏传感数据发送到串口
-      ，且LED1,LED2每3秒闪烁一次....................*/
+/*题区7开始：按照D4->D3->D6->D5的顺序,每隔1秒依次点亮一个灯*/
 
-      /*.......答题区6结束.......................................*/
-    }
-}
-
-/************按键SW1中断服务子程序**************/
-#pragma vector=P1INT_VECTOR //第P1组中断
-__interrupt void EXTI1_ISR()
-{   
-    if(P1IFG & 0X04) //按键SW1按下时
+ /************答题区7结束***************/
+    count_DSQ++;
+    
+    if(ZC_AN_2 == 1)    //0x0~0xf显示，每秒加1
     {
-        if(SW1==0)//确实是SW1按钮触发了外部中断
+        if(count_DSQ == 2)
         {
-          if(Sw1_Count == 0)//第一次按下按键
-          {
-              Uart_tx_string("开始1秒循环采集", sizeof("开始1秒循环采集"));
-            LED1 = 0;
-            LED2 = 0;
-            count = 0;
-            Sw1_Count++;
-          }
-          else if(Sw1_Count == 1)//第二次按下按键
-          {
-              Uart_tx_string("开始3秒循环采集", sizeof("开始3秒循环采集"));
-            LED1 = 0;
-            LED2 = 0;
-            count = 0;
-            Sw1_Count++;
-          }
-          else if(Sw1_Count == 2)//第三次按下按键
-          {
-              Uart_tx_string("停止采集", sizeof("停止采集"));
-            LED1 = 0;
-            LED2 = 0;
-            count = 0;
-            Sw1_Count = 0;
-          }
-          
+            D4 = 0;
+            D3 = 0;
+            D6 = 0;
+            D5 = 0;
+        }  
+        if(count_DSQ == 4)
+        {
+            D4 = 0;
+            D3 = 0;
+            D6 = 0;
+            D5 = 1;
         }
-    }
-  
-    //注意产生中断时会把以下值变为1，执行完中断后务必记得下面的操作：要清0
-    //中断标志位清0
-    P1IFG&=~(0X1<<2);//清SW1中断标志
-    IRCON2&=~(0x1<<3);  //清P1端口组中断标志 第3位为0代表端口1组中断标志位被清除  P1IF=0;
+        if(count_DSQ == 6)
+        {
+            D4 = 0;
+            D3 = 0;
+            D6 = 1;
+            D5 = 0;
+        }
+        if(count_DSQ == 8)
+        {
+            D4 = 0;
+            D3 = 0;
+            D6 = 1;
+            D5 = 1;
+        }
+        if(count_DSQ == 10)
+        {
+            D4 = 0;
+            D3 = 1;
+            D6 = 0;
+            D5 = 0;
+        }  
+        if(count_DSQ == 12)
+        {
+            D4 = 0;
+            D3 = 1;
+            D6 = 0;
+            D5 = 1;
+        }
+        if(count_DSQ == 14)
+        {
+            D4 = 0;
+            D3 = 1;
+            D6 = 1;
+            D5 = 0;
+        }
+        if(count_DSQ == 16)
+        {
+            D4 = 0;
+            D3 = 1;
+            D6 = 1;
+            D5 = 1;
+        }
+        if(count_DSQ == 18)
+        {
+            D4 = 1;
+            D3 = 0;
+            D6 = 0;
+            D5 = 0;
+        }  
+        if(count_DSQ == 20)
+        {
+            D4 = 1;
+            D3 = 0;
+            D6 = 0;
+            D5 = 1;
+        }
+        if(count_DSQ == 22)
+        {
+            D4 = 1;
+            D3 = 0;
+            D6 = 1;
+            D5 = 0;
+        }
+        if(count_DSQ == 24)
+        {
+            D4 = 1;
+            D3 = 0;
+            D6 = 1;
+            D5 = 1;
+        }
+        if(count_DSQ == 26)
+        {
+            D4 = 1;
+            D3 = 1;
+            D6 = 0;
+            D5 = 0;
+        }  
+        if(count_DSQ == 28)
+        {
+            D4 = 1;
+            D3 = 1;
+            D6 = 0;
+            D5 = 1;
+        }
+        if(count_DSQ == 30)
+        {
+            D4 = 1;
+            D3 = 1;
+            D6 = 1;
+            D5 = 0;
+        }
+        if(count_DSQ == 32)
+        {
+            D4 = 1;
+            D3 = 1;
+            D6 = 1;
+            D5 = 1;
+            count_DSQ = 0;
+        }
+    } 
+  }
 }
 
-void main( )
+void main(void)
 {
-    InitCLK();//系统时钟32M
-    InitLED();//灯的初始化  
-    InitSW1();//按键初始化
-    InitUART0();//串口初始化
-    InitT1();//定时器初始化
+    CLKCONCMD &= ~0X7F;        //0X80 选择了一个32MHz的时钟源
+    while(CLKCONSTA & 0X40);   //等待晶振稳定
+    initial_usart_tx();
+    initial_t1();             //调用定时器设置函数
+    initLed();
     while(1)
-    {
-    }
-  }
+    {    
+        if(SW1 == 0)
+        {
+            delay(30);
+            if(SW1 == 0)
+            {
+                D4 = 0;D3 = 0;D6 = 0;D5 = 0;  //熄灭灯
+                T1IE = 1;                     //开定时器
+                C_AN = 1;                     //开长按不松开标志
+                ZC_AN_2 = 0;                  //清理按键2处理标志
+                count_DSQ = 0;                //定时器计数器清0
+                while(!SW1);                  //等待键放松
+                T1IE = 0;                     //键放松后关定时器
+                count_DSQ = 0;                //定时器计数器清0
+                C_AN = 0;                     //键放松后长按键标志清0
+                count++;	              //记录按键次数
+                switch(count) 
+                {
+                    case 1: 
+/*********答题区2开始******************************/  
+
+/*********答题区2结束******************************/  
+                    case 2: 
+/*********答题区3开始******************************/  
+
+/*********答题区3结束******************************/  
+                    default:
+/*********答题区4开始******************************/  
+
+/*********答题区4结束******************************/  
+                }
+            }
+        }
+        
+        if(count == 1)  //微亮
+        {
+            D4 = 1;
+            D3 = 1;
+            D6 = 1;
+            D5 = 1;
+            delay(1);
+            D4 = 0;
+            D3 = 0;
+            D6 = 0;
+            D5 = 0;
+            delay(39);
+        }  
+       
+    }  
+}
